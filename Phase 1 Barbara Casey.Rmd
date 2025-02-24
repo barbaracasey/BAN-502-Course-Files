@@ -1,0 +1,65 @@
+---
+title: "Phase 1"
+output: word_document
+date: "2025-02-17"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+ Set up process:
+ 
+library(tidyverse)
+library(ggplot2)
+library(dplyr)
+library(VIM)
+library(mice)
+library(esquisse)
+
+Investigating the data:
+
+train = read_csv("train.csv")
+#str(train)
+#summary(train)
+aggr(train)
+
+Removing missind data with immpution, 5 data sets where created with it and the first one was used:
+
+set.seed(123)
+imputeddata <- mice(train, m = 5, method = "pmm", seed = 123)
+train1 <- complete(imputeddata, 1)   
+#summary(train1)
+
+Visualization
+
+#Failures as a whole
+ggplot(train1) +
+ aes(x = failure) +
+ geom_bar(fill = "#112446") + 
+ labs(title = "Distribution of Failures")
+ theme_minimal()
+ 
+#Loading
+ggplot(train1, aes(x = failure, y = loading, fill = failure)) +
+  geom_boxplot() +
+  labs(title = "Failure and Loading", x = "Failure", y = "Loading") +
+  theme_minimal()
+  
+#7
+ggplot(train1, aes(x = failure, y = measurement_7, fill = failure)) +
+  geom_boxplot() +
+  labs(title = "Failure and Measurement 7", x = "Failure", y = "Measurement 7") +
+  theme_minimal()
+  
+#8 
+ggplot(train1, aes(x = failure, y = measurement_8, fill = failure)) +
+  geom_boxplot() +
+  labs(title = "Failure and Measurement 8", x = "Failure", y = "Measurement 8") +
+  theme_minimal()
+  
+
+
+
+
+
