@@ -1,0 +1,307 @@
+---
+title: "Phase2"
+output: word_document
+---
+
+```{r}
+#Packages
+library(tidyverse)
+library(tidymodels)
+library(mice) 
+library(VIM)
+library(naniar) 
+library(skimr) 
+library(ggplot2)
+library(randomForest)
+library(rpart)
+library(rpart.plot)
+library(vip)
+```
+
+```{r}
+library(readr)
+ames <- read_csv("Downloads/ames_student-1.csv")
+View(ames)
+```
+
+```{r}
+str(ames)
+summary(ames)
+skim(ames)
+```
+
+```{r}
+gg_miss_var(ames)
+```
+
+
+```{r}
+#Factor conversion for Above_Median so it can be recognized as binary
+
+ames$Above_Median <- factor(ames$Above_Median, levels = c("Yes", "No"))
+
+#making sure the variable looks correct from conversion before recipe and model building
+ggplot(ames, aes(x = as.factor(Above_Median), fill = as.factor(Above_Median))) +
+  geom_bar() +
+  theme_minimal()
+
+```
+
+
+```{r}
+#Testing and training splts
+#Random seed with 70/30 split
+set.seed(123)
+
+ames_split <- initial_split(ames, prop = 0.7, strata = Above_Median)
+
+ames_train <- training(ames_split)
+
+ames_test <- testing(ames_split)
+
+#Cross validation with 5 fold
+
+set.seed(123)
+
+cv_folds <- vfold_cv(ames_train, v = 5, strata = Above_Median)
+```
+
+
+```{r}
+#Removing Latitude and longitude from the training and testing sets
+
+ames_trainn <- ames_train %>%
+  select(-Longitude, -Latitude)
+ames_testt <- ames_test %>%
+  select(-Longitude, -Latitude)
+
+#Recipe and preparing for categorical variables in the models & making sure Above_Median is not used as a dummy variable in building
+ames_recipe <- recipe(Above_Median ~ ., data = ames_trainn) %>%
+  step_novel(all_nominal_predictors()) %>%  
+  step_dummy(all_nominal_predictors(), -all_outcomes()) %>%  
+  step_zv(all_predictors()) %>% 
+  step_normalize(all_numeric_predictors())
+```
+
+
+```{r}
+#Ridge Regression/ Logisitc Regression with L2 Penalty
+log_model <- logistic_reg(penalty = 0.01) %>%  
+  set_engine("glmnet")
+
+log_wf <- workflow() %>%
+  add_recipe(ames_recipe) %>%
+  add_model(log_model)
+
+log_results <- fit_resamples(log_wf, cv_folds, metrics = metric_set(accuracy, roc_auc))
+```
+
+
+```{r}
+#Classification Tree
+tree_model <- decision_tree() %>%
+  set_engine("rpart") %>%
+  set_mode("classification")
+
+tree_wf <- workflow() %>%
+  add_recipe(ames_recipe) %>%
+  add_model(tree_model)
+
+tree_results <- fit_resamples(tree_wf, cv_folds, metrics = metric_set(accuracy, roc_auc))
+```
+
+
+
+```{r}
+#Random Forest
+rf_model <- rand_forest(trees = 500) %>%
+  set_engine("randomForest") %>%
+  set_mode("classification")
+
+rf_wf <- workflow() %>%
+  add_recipe(ames_recipe) %>%
+  add_model(rf_model)
+
+rf_results <- fit_resamples(rf_wf, cv_folds, metrics = metric_set(accuracy, roc_auc))
+```
+
+
+
+```{r}
+#Model performance accuracy and roc
+log_perf <- collect_metrics(log_results)
+
+tree_perf <- collect_metrics(tree_results)
+
+rf_perf <- collect_metrics(rf_results)
+
+log_perf
+
+tree_perf
+
+rf_perf
+
+```
+
+```{r}
+# Models with Training data
+final_log <- fit(log_wf, ames_trainn)
+
+final_tree <- fit(tree_wf, ames_trainn)
+
+final_rf <- fit(rf_wf, ames_trainn)
+```
+
+
+```{r}
+#Variable importance for random forest model
+rf_vip <- final_rf %>% extract_fit_parsnip() %>% vip(num_features = 10)
+
+rf_vip
+
+#Testing set predicitions 
+ames_test_predictions <- bind_cols(
+  ames_testt,
+  predict(final_log, ames_testt, type = "prob") %>%
+    rename_with(~ paste0("log_", .)),
+  predict(final_tree, ames_testt, type = "prob") %>%
+    rename_with(~ paste0("tree_", .)),
+  predict(final_rf, ames_testt, type = "prob") %>%
+    rename_with(~ paste0("rf_", .))
+)
+
+predict(final_log, ames_testt, type = "prob")
+```
+
+
+```{r}
+#Model comparasion renamed the model names because the chart was not working aesthically with full names. Not enough room after first try
+
+model_performance <- bind_rows(
+  log_perf %>% mutate(Model = "Logistic Regression"),
+  tree_perf %>% mutate(Model = "Decision Tree"),
+  rf_perf %>% mutate(Model = "Random Forest")
+)
+
+#Final comparision plot
+model_performance <- model_performance %>%
+  mutate(Model = recode(Model,
+                        "Decision Tree" = "DT",
+                        "Logistic Regression" = "LR",
+                        "Random Forest" = "RF"))
+
+ggplot(model_performance, aes(x = Model, y = mean, fill = Model)) +
+  geom_col() +
+  facet_wrap(~.metric, scales = "free") +
+  theme_minimal() +
+  labs(title = "Model Performance Comparison")
+```
+
+```{r}
+#Roc curves for each model first the prediction then getting it to become the curve and combining it for the once chart
+log_pred <- predict(final_log, ames_test, type = "prob") %>%
+  bind_cols(ames_testt %>% select(Above_Median))
+
+tree_pred <- predict(final_tree, ames_test, type = "prob") %>%
+  bind_cols(ames_testt %>% select(Above_Median))
+
+rf_pred <- predict(final_rf, ames_test, type = "prob") %>%
+  bind_cols(ames_testt %>% select(Above_Median))
+
+log_roc <- roc_curve(log_pred, truth = Above_Median, .pred_Yes) %>%
+  mutate(Model = "LR")
+
+tree_roc <- roc_curve(tree_pred, truth = Above_Median, .pred_Yes) %>%
+  mutate(Model = "DT")
+
+rf_roc <- roc_curve(rf_pred, truth = Above_Median, .pred_Yes) %>%
+  mutate(Model = "RF")
+
+roc_data <- bind_rows(log_roc, tree_roc, rf_roc)
+
+ggplot(roc_data, aes(x = 1 - specificity, y = sensitivity, color = Model)) +
+  geom_line(size = 1) +
+  geom_abline(linetype = "dashed", color = "gray") +  # Random classifier line
+  theme_minimal() +
+  labs(title = "ROC Curve",
+       x = "False Positive Rate",
+       y = "True Positive Rate",
+       color = "Model") +
+  theme(legend.position = "bottom")
+
+
+
+```
+
+```{r}
+#Rechecking to make sure my predicited probablilites are within 0-1 because roc was negative. Updated above code and this is no longer neccasary. I realized my roc curve was plotted incorrectly
+head(predict(final_log, ames_testt, type = "prob"))
+head(predict(final_tree, ames_testt, type = "prob"))
+head(predict(final_rf, ames_testt, type = "prob"))
+
+```
+
+```{r}
+#Random forest performance for presentation
+rf_predictions <- predict(final_rf, ames_testt, type = "class") %>%
+  bind_cols(ames_test %>% select(Above_Median))
+
+rf_conf_matrix <- rf_predictions %>%
+  conf_mat(truth = Above_Median, estimate = .pred_class)
+
+rf_conf_matrix_tbl <- as_tibble(rf_conf_matrix$table)
+
+rf_conf_matrix_tbl <- as_tibble(rf_conf_matrix$table)
+
+ggplot(as_tibble(rf_conf_matrix$table), aes(x = Prediction, y = Truth, fill = n)) +
+  geom_tile() +
+  geom_text(aes(label = n), color = "white") +
+  theme_minimal()
+
+rf_predictions %>%
+  metrics(truth = Above_Median, estimate = .pred_class)
+
+```
+
+```{r}
+#Tree for presentation
+tree_predictions <- predict(final_tree, ames_testt, type = "class") %>%
+  bind_cols(ames_test %>% select(Above_Median))
+
+tree_conf_matrix <- tree_predictions %>%
+  conf_mat(truth = Above_Median, estimate = .pred_class)
+
+tree_conf_matrix_tbl <- as_tibble(tree_conf_matrix$table)
+
+tree_conf_matrix_tbl <- as_tibble(tree_conf_matrix$table)
+
+ggplot(as_tibble(tree_conf_matrix$table), aes(x = Prediction, y = Truth, fill = n)) +
+  geom_tile() +
+  geom_text(aes(label = n), color = "white") +
+  theme_minimal()
+
+tree_predictions %>%
+  metrics(truth = Above_Median, estimate = .pred_class)
+```
+
+```{r}
+#Log for presentation
+log_predictions <- predict(final_log, ames_testt, type = "class") %>%
+  bind_cols(ames_test %>% select(Above_Median))
+
+log_conf_matrix <- log_predictions %>%
+  conf_mat(truth = Above_Median, estimate = .pred_class)
+
+log_conf_matrix_tbl <- as_tibble(log_conf_matrix$table)
+
+log_conf_matrix_tbl <- as_tibble(log_conf_matrix$table)
+
+ggplot(as_tibble(log_conf_matrix$table), aes(x = Prediction, y = Truth, fill = n)) +
+  geom_tile() +
+  geom_text(aes(label = n), color = "white") +
+  theme_minimal()
+
+log_predictions %>%
+  metrics(truth = Above_Median, estimate = .pred_class)
+```
+
